@@ -1,0 +1,18 @@
+# Ambiente virtuale
+.venv/
+
+# Dati: troppo grandi per GitHub, si riscaricano con scripts/download_data.py
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Editor e sistema
+.vscode/
+.idea/
+.DS_Store
