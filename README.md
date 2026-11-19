@@ -14,6 +14,7 @@ recensioni quando presenti.
 steam-recommender/
 ├── data/
 │   ├── raw/            # file scaricati (non caricati su GitHub)
+│   ├── interim/        # gli stessi dati letti e salvati come tabelle Parquet
 │   └── processed/      # tabelle pulite (fasi successive)
 ├── notebooks/          # esplorazione dei dati
 ├── scripts/
@@ -54,10 +55,20 @@ Se il download automatico non riesce, i file si scaricano a mano dalla pagina
 [Recommender Systems and Personalization Datasets](https://cseweb.ucsd.edu/~jmcauley/datasets.html)
 (sezione *Steam Video Game and Bundle Data*) e vanno messi in `data/raw/`.
 
-Controllo rapido del contenuto:
+Poi si leggono i file e si salvano come tabelle in `data/interim/` (formato Parquet).
+La prima volta richiede qualche minuto; le successive pochi secondi. Il comando stampa
+anche un riepilogo dei dati:
 
 ```bash
-python -m src.load
+python -m src.load              # usa le tabelle già salvate, se ci sono
+python -m src.load --refresh    # le ricrea dai file .gz
+```
+
+Negli altri file del progetto le tabelle si caricano così:
+
+```python
+from src.load import load_tables
+users_items, games, reviews = load_tables()
 ```
 
 ## Fonte dei dati

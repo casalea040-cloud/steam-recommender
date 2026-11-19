@@ -8,24 +8,37 @@ Funzioni principali:
     load_users_items()  -> una riga per coppia (utente, gioco) con le ore di gioco
     load_games()        -> una riga per gioco con generi, tag, specs, ...
     load_reviews()      -> una riga per recensione, con il voto consigliato sì/no
+    load_tables()       -> le tre tabelle insieme, salvate in data/interim/ in
+                           formato Parquet: la prima volta legge i .gz (lento),
+                           le volte successive rilegge i Parquet (pochi secondi)
 
-Per un controllo veloce, dalla cartella principale del progetto:
-    python -m src.load
+Per creare le tabelle e vedere un riepilogo, dalla cartella principale del progetto:
+    python -m src.load              # usa le tabelle già salvate, se ci sono
+    python -m src.load --refresh    # le ricrea dai file .gz
 """
 
+import argparse
 import ast
 import gzip
 import json
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Tuple
 
 import pandas as pd
 
-from src.config import GAMES_FILE, REVIEWS_FILE, USERS_ITEMS_FILE
+from src.config import (
+    GAMES_FILE,
+    GAMES_TABLE,
+    INTERIM_DIR,
+    REVIEWS_FILE,
+    REVIEWS_TABLE,
+    USERS_ITEMS_FILE,
+    USERS_ITEMS_TABLE,
+)
 
 
 # ---------------------------------------------------------------------------
-# Lettura riga per riga
+# Lettura riga per riga--> read_records trasforma ogni riga di testo del file in un dizionario
 # ---------------------------------------------------------------------------
 
 def read_records(path: Path, limit: Optional[int] = None) -> Iterator[dict]:
@@ -118,6 +131,22 @@ def load_users_items(path: Path = USERS_ITEMS_FILE, limit: Optional[int] = None)
 # Metadati dei giochi (per il content-based)
 # ---------------------------------------------------------------------------
 
+def _price_to_float(value) -> Optional[float]:
+    """Converte il prezzo in numero: i testi con 'free' valgono 0, gli altri testi mancano."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        if "free" in value.lower():
+            return 0.0
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 GAME_COLUMNS = [
     "id", "app_name", "title", "developer", "publisher",
     "genres", "tags", "specs", "release_date", "price", "early_access",
@@ -141,6 +170,14 @@ def load_games(path: Path = GAMES_FILE, limit: Optional[int] = None) -> pd.DataF
     df = pd.DataFrame(rows, columns=GAME_COLUMNS)
     for col in ("genres", "tags", "specs"):
         df[col] = df[col].apply(_as_list)
+
+    # Ogni colonna deve avere un solo tipo, altrimenti non si salva in Parquet.
+    # Le colonne di testo: tutto in stringa (i valori mancanti restano mancanti).
+    for col in ("app_name", "title", "developer", "publisher", "release_date"):
+        df[col] = df[col].map(lambda v: None if v is None else str(v))
+    # Il prezzo a volte è un numero (14.99), a volte un testo ("Free To Play").
+    df["price"] = df["price"].map(_price_to_float)
+    df["early_access"] = df["early_access"].map(lambda v: None if v is None else bool(v))
 
     df = df.dropna(subset=["id"]).copy()
     df["id"] = df["id"].astype(str)
@@ -181,34 +218,78 @@ def load_reviews(path: Path = REVIEWS_FILE, limit: Optional[int] = None) -> pd.D
 
 
 # ---------------------------------------------------------------------------
-# Controllo veloce: python -m src.load
+# Salvataggio delle tabelle in Parquet (data/interim/)
 # ---------------------------------------------------------------------------
 
-def _summary() -> None:
-    print("Lettura librerie utenti...")
-    ui = load_users_items()
+def _load_or_build(table_path: Path, build, name: str, refresh: bool) -> pd.DataFrame:
+    """Rilegge la tabella dal file Parquet se esiste; altrimenti la costruisce
+    dai file .gz con la funzione build() e la salva, così la prossima volta è veloce.
+    """
+    if table_path.exists() and not refresh:
+        print(f"[da Parquet] {name}")
+        return pd.read_parquet(table_path)
+
+    print(f"[dai file .gz] {name} (può richiedere qualche minuto)...")
+    df = build()
+    INTERIM_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(table_path, index=False)
+    print(f"  salvata in {table_path}")
+    return df
+
+
+def load_tables(refresh: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Le tre tabelle del dataset: (librerie utenti, giochi, recensioni).
+
+    La prima volta le legge dai file .gz e le salva in data/interim/ in formato
+    Parquet; le volte successive le rilegge da lì. Con refresh=True le ricrea
+    comunque dai .gz (serve se si modifica il modo in cui vengono lette).
+
+    Uso, in un altro file del progetto:
+        from src.load import load_tables
+        users_items, games, reviews = load_tables()
+    """
+    users_items = _load_or_build(USERS_ITEMS_TABLE, load_users_items, "librerie utenti", refresh)
+    games = _load_or_build(GAMES_TABLE, load_games, "metadati giochi", refresh)
+    reviews = _load_or_build(REVIEWS_TABLE, load_reviews, "recensioni", refresh)
+
+    # Parquet restituisce generi, tag e specs come array: li riportiamo a liste,
+    # così sono sempre dello stesso tipo, da qualunque parte arrivino
+    for col in ("genres", "tags", "specs"):
+        games[col] = games[col].map(list)
+
+    return users_items, games, reviews
+
+
+# ---------------------------------------------------------------------------
+# Riepilogo: python -m src.load
+# ---------------------------------------------------------------------------
+
+def _summary(refresh: bool = False) -> None:
+    ui, games, rv = load_tables(refresh=refresh)
+
+    print("\nLibrerie utenti")
     print(f"  righe (utente, gioco): {len(ui):,}")
     print(f"  utenti con almeno un gioco: {ui['user_id'].nunique():,}")
     print(f"  giochi distinti: {ui['item_id'].nunique():,}")
     print(f"  righe con 0 minuti di gioco: {(ui['playtime_forever'] == 0).mean():.1%}")
 
-    print("\nLettura metadati giochi...")
-    games = load_games()
+    print("\nMetadati giochi")
     print(f"  giochi con metadati: {len(games):,}")
     for col in ("genres", "tags", "specs"):
-        empty = (games[col].str.len() == 0).mean()
+        empty = (games[col].map(len) == 0).mean()
         print(f"  giochi senza {col}: {empty:.1%}")
 
     played = set(ui["item_id"])
     covered = played & set(games["item_id"])
-    print(f"\n  giochi delle librerie che hanno metadati: {len(covered):,} su {len(played):,}")
+    print(f"  giochi delle librerie che hanno metadati: {len(covered):,} su {len(played):,}")
 
-    print("\nLettura recensioni...")
-    rv = load_reviews()
+    print("\nRecensioni")
     print(f"  recensioni: {len(rv):,}")
     print(f"  utenti che hanno recensito: {rv['user_id'].nunique():,}")
     print(f"  recensioni positive: {rv['recommend'].mean():.1%}")
 
 
 if __name__ == "__main__":
-    _summary()
+    parser = argparse.ArgumentParser(description="Crea le tabelle del dataset e ne stampa un riepilogo.")
+    parser.add_argument("--refresh", action="store_true", help="ricrea le tabelle dai file .gz")
+    _summary(refresh=parser.parse_args().refresh)

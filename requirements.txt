@@ -3,5 +3,6 @@ numpy
 scipy
 scikit-learn
 matplotlib
+pyarrow
 jupyter
 streamlit

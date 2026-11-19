@@ -3,8 +3,10 @@
 
 # Dati: troppo grandi per GitHub, si riscaricano con scripts/download_data.py
 data/raw/*
+data/interim/*
 data/processed/*
 !data/raw/.gitkeep
+!data/interim/.gitkeep
 !data/processed/.gitkeep
 
 # Python
