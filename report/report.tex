@@ -1,0 +1,330 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[italian]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{parskip}   % paragrafi senza rientro, separati da uno spazio verticale
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\title{Steam Recommender\\[4pt]
+\large Confronto tra content-based e collaborative filtering con feedback implicito}
+\author{Alessandro Casale -- Matricola 578749\\
+Sistemi Intelligenti per Internet\\
+Laurea magistrale in Ingegneria Informatica, Università Roma Tre}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{center}
+Codice: \url{https://github.com/casalea040-cloud/steam-recommender}
+\end{center}
+
+\section{Introduzione}
+
+In questo progetto ho realizzato un sistema di raccomandazione di videogiochi per
+gli utenti di Steam, con l'obiettivo di confrontare i due approcci visti a
+lezione: il content-based e il collaborative filtering. Ho applicato entrambi
+agli stessi utenti e giochi e li ho valutati con le stesse metriche,
+così da poterne confrontare risultati e limiti.
+
+Ho usato i dati pubblici di Steam raccolti dalla UC San Diego, che contengono tre
+informazioni: i giochi presenti nella libreria di ogni utente, con il tempo di
+gioco; le caratteristiche dei giochi (generi, tag, modalità di gioco); le
+recensioni scritte dagli utenti. Mentre il tempo di gioco, espresso in minuti, è presente per ogni coppia utente-gioco, le recensioni sono molte meno. Per questo ho dovuto ricavare dalle ore di gioco un \emph{indice di
+gradimento}, utile per entrambi gli approcci affrontati: un gioco è considerato gradito se l'utente lo ha recensito
+positivamente oppure, in assenza di recensione, se ci ha giocato almeno due ore
+(Sezione~\ref{sec:gradimento}). 
+
+\subsection*{I due approcci}
+
+Nel \textbf{content-based} ogni gioco è rappresentato da un vettore costruito dai
+suoi generi, tag e modalità di gioco. Il profilo di un utente è la media dei
+vettori dei giochi che ha gradito; a ogni gioco che non possiede assegno come
+punteggio la similarità coseno con il suo profilo, e gli raccomando i giochi con
+il punteggio più alto. Questo approccio usa solo le caratteristiche dei giochi e
+i dati dell'utente stesso.
+
+Nel \textbf{collaborative filtering} le caratteristiche dei giochi non vengono
+usate: conta solo chi ha gradito cosa, cioè una matrice con gli utenti sulle righe e i
+giochi sulle colonne (Sezione~\ref{sec:matrici}). Ho considerato due versioni. Nella versione
+\emph{user-based} confronto le righe della matrice per trovare gli utenti con
+gusti più simili, e raccomando i giochi che loro hanno gradito. Nella versione
+\emph{item-based} confronto le colonne, considerando simili due giochi graditi
+dalle stesse persone, e raccomando i giochi più simili a quelli che l'utente ha
+già gradito. In entrambi i casi uso la similarità coseno.
+
+\section{Dataset}
+
+Ho usato lo Steam Video Game and Bundle Data della UC San
+Diego~\cite{dataset}, e in particolare tre file:
+\begin{itemize}
+  \item \texttt{australian\_users\_items}: per ogni utente, i giochi posseduti
+        con il tempo di gioco in minuti;
+  \item \texttt{steam\_games}: per ogni gioco, titolo, generi, tag, specs,
+        prezzo e data di uscita;
+  \item \texttt{australian\_user\_reviews}: le recensioni, con l'indicazione
+        consigliato sì/no.
+\end{itemize}
+I file sono collegati dall'identificativo del gioco. La
+Tabella~\ref{tab:dataset} riassume i dati prima della pulizia.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+Coppie utente--gioco nelle librerie & 5.153.209 \\
+Utenti con almeno un gioco & 70.912 \\
+Giochi nelle librerie & 10.978 \\
+\quad di cui con metadati & 9.192 \\
+Coppie utente--gioco con 0 minuti di gioco & 36,2\% \\
+Recensioni (da 25.458 utenti) & 59.305 \\
+\quad di cui positive & 88,5\% \\
+\bottomrule
+\end{tabular}
+\caption{Il dataset prima della pulizia.}
+\label{tab:dataset}
+\end{table}
+
+Più di un gioco posseduto su tre non è mai stato avviato, probabilmente perché
+acquistato in saldo o all'interno di un bundle: il possesso da solo non indica
+gradimento. Per descrivere i giochi ho scelto come fonte principale i tag,
+assenti solo nello 0,5\% dei casi contro il 10,2\% dei generi; il dataset non
+contiene descrizioni testuali.
+
+\section{Acquisizione e memorizzazione dei dati}
+
+Ho sviluppato il progetto in Python, usando pandas per le tabelle, SciPy e
+scikit-learn per le matrici e le similarità, PyArrow per il formato Parquet e
+Streamlit per la web app.
+
+Ho scritto uno script, \texttt{download\_data.py}, che scarica i file in
+\texttt{data/raw}. I file non sono JSON standard (ogni riga è un dizionario
+Python), quindi nel modulo \texttt{load.py} li leggo riga per riga con
+\texttt{ast.literal\_eval} e li trasformo in tabelle pandas in formato lungo: una
+riga per coppia utente--gioco, per recensione e per gioco. Durante la lettura
+uniformo gli identificativi, rendo generi, tag e specs sempre liste e converto il
+prezzo in numero (0 per i giochi gratuiti).
+
+La lettura dei file originali richiede alcuni minuti, quindi salvo le tabelle in
+formato Parquet in \texttt{data/interim} e nelle esecuzioni successive le rileggo
+da lì in pochi secondi. Le tabelle pulite le salvo in \texttt{data/processed}.
+Non modifico mai i file originali, così l'intero processo si può rieseguire dagli
+script. Ho raccolto i percorsi in un unico modulo di configurazione e ho
+pubblicato il codice su GitHub, lasciando fuori dal repository i dati.
+
+\section{Pulizia dei dati}
+
+Per la pulizia ho fatto queste considerazioni:
+\begin{itemize}
+  \item elimino le coppie utente--gioco e le recensioni duplicate;
+  \item escludo i giochi senza metadati (1.786 dei 10.978 presenti nelle
+        librerie), così che i due approcci lavorino sugli stessi giochi;
+  \item dopo aver calcolato l'indice di gradimento
+        (Sezione~\ref{sec:gradimento}), escludo gli utenti con meno di 5 giochi
+        graditi e i giochi graditi da meno di 5 utenti.
+\end{itemize}
+
+Le due soglie si influenzano a vicenda: togliere un gioco può far scendere un
+utente sotto i 5 giochi graditi, e togliere un utente può far scendere un gioco
+sotto i 5 utenti. Per questo ripeto i due filtri finché un passaggio non toglie
+più nulla. La Tabella~\ref{tab:pulizia} mostra l'effetto di ogni passo.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Passo & Utenti & Giochi & Coppie utente--gioco \\
+\midrule
+Librerie originali             & 70.912 & 10.978 & 5.153.209 \\
+Eliminazione dei duplicati     & 70.912 & 10.978 & 5.094.082 \\
+Solo giochi con metadati       & 68.712 &  9.192 & 4.244.812 \\
+Filtri, primo passaggio        & 53.659 &  5.230 & 4.020.111 \\
+Filtri, secondo passaggio      & 53.653 &  5.229 & 4.019.999 \\
+Filtri, terzo passaggio        & 53.653 &  5.229 & 4.019.999 \\
+\bottomrule
+\end{tabular}
+\caption{Utenti, giochi e coppie utente--gioco dopo ogni passo della pulizia.}
+\label{tab:pulizia}
+\end{table}
+
+Quasi tutta la riduzione avviene al primo passaggio dei filtri, che toglie circa
+15.000 utenti e 4.000 giochi: molti utenti hanno pochi giochi graditi, e molti
+giochi sono apprezzati da pochissime persone. Il secondo passaggio toglie solo 6
+utenti e un gioco, effetto a catena del primo, e il terzo non cambia più nulla,
+quindi il ciclo si ferma. Alla fine restano 53.653 utenti, 5.229 giochi e
+4.019.999 coppie utente--gioco posseduto, di cui 1.676.503 gradite.
+
+\section{Indice di gradimento}
+\label{sec:gradimento}
+
+Poiché possedere un gioco non significa averlo apprezzato, ho definito una regola
+che stabilisce quando un gioco è gradito. Indicando con $t(u,i)$ il tempo di
+gioco in minuti dell'utente $u$ sul gioco $i$, l'indice che ho adottato è:
+\[
+g(u,i) =
+\begin{cases}
+1 & \text{se } u \text{ ha recensito positivamente } i,\\
+0 & \text{se } u \text{ ha recensito negativamente } i,\\
+1 & \text{se non c'è recensione e } t(u,i) \geq 120,\\
+0 & \text{altrimenti.}
+\end{cases}
+\]
+Ho dato la precedenza alla recensione, quando presente: essendo un giudizio
+espresso direttamente dall'utente, deve essere più importante di qualsiasi altra valutazione estrapolata dai dati.
+
+Ho fissato la soglia a due ore (espresse in minuti) riprendendo direttamente la politica di rimborso di Steam, che
+consente di restituire un gioco entro due settimane dall'acquisto se è stato
+giocato meno di due ore~\cite{refund}. Chi supera questa soglia ha continuato a
+giocare oltre il periodo in cui poteva ancora chiedere il rimborso, e lo
+considero un segnale di gradimento. In questo modo i giochi mai avviati risultano
+non graditi, e la quota di giocatori che gradiscono un gioco varia da gioco a
+gioco.
+
+Inizialmente avevo considerato una soglia relativa: la mediana delle ore dei
+giocatori di ciascun gioco, che rendeva  confrontabili giochi brevi e lunghi. Con la mediana l'idea era fissare valore gradimento 1 se l'utente aveva un numero di ore maggiore del valore della mediana, 0 altrimenti. L'ho
+scartata perché, per costruzione, classifica come non gradito ciascun gioco a esattamente metà dei giocatori, indipendentemente da quanto il gioco sia apprezzato in realtà. La soglia
+fissa ha il limite opposto: due ore pesano allo stesso modo per un gioco breve e
+per uno molto lungo.
+
+\section{Modelli}
+\label{sec:modelli}
+
+\subsection{La matrice utenti $\times$ giochi}
+\label{sec:matrici}
+
+Tutti i modelli lavorano su matrici con gli utenti sulle righe e i giochi sulle
+colonne. Le costruisco a partire dalla tabella pulita, in cui ogni riga è una
+coppia utente--gioco con i minuti di gioco e l'indice di gradimento, e ne ricavo
+due:
+\begin{itemize}
+  \item la matrice di gradimento $G$, in cui ogni cella contiene l'indice di
+        gradimento $g(u,i)$ dell'utente per quel gioco, e vale 0 per i giochi
+        che l'utente non possiede (Tabella~\ref{tab:matrice});
+  \item la matrice di possesso $O$, che vale 1 per ogni gioco presente nella
+        libreria dell'utente, gradito o no.
+\end{itemize}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+ & Gioco 1 & Gioco 2 & Gioco 3 \\
+\midrule
+Utente A & 1 & 0 & 0 \\
+Utente B & 1 & 1 & 0 \\
+Utente C & 0 & 1 & 1 \\
+\bottomrule
+\end{tabular}
+\caption{Esempio di matrice di gradimento $G$: 1 = gioco gradito, 0 =
+gioco non gradito o non posseduto.}
+\label{tab:matrice}
+\end{table}
+
+Uso $G$ per calcolare similarità e punteggi; $O$ mi serve per non raccomandare a
+un utente giochi che possiede già, anche quelli che non ha gradito. Con decine
+di migliaia di utenti e migliaia di giochi le matrici sono quasi tutte vuote,
+perché ogni utente possiede una piccola parte del catalogo; per questo le
+memorizzo come matrici sparse, salvando solo le celle diverse da zero.
+
+\subsection{Collaborative filtering user-based}
+
+L'idea del collaborative filtering user-based è che utenti che in passato hanno
+gradito gli stessi giochi probabilmente continueranno a gradire gli stessi. Per raccomandare giochi a un utente cerco quindi gli utenti con i
+gusti più simili ai suoi, i suoi \emph{vicini}, e gli propongo i giochi che loro
+hanno gradito e lui non possiede.
+
+\paragraph{Similarità tra utenti.} Rappresento ogni utente $u$ con la sua riga
+$\mathbf{g}_u$ di $G$ e misuro la somiglianza tra due utenti con la similarità
+coseno. Poiché le righe contengono solo 0 e 1, indicando con $I_u$ l'insieme dei
+giochi graditi da $u$, la formula ha un significato semplice:
+\[
+\mathrm{sim}(u,v) = \frac{\mathbf{g}_u \cdot \mathbf{g}_v}
+{\lVert\mathbf{g}_u\rVert\,\lVert\mathbf{g}_v\rVert}
+= \frac{|I_u \cap I_v|}{\sqrt{|I_u|\,|I_v|}}.
+\]
+Il numeratore conta i giochi graditi da entrambi; il denominatore evita che un
+utente con una libreria enorme risulti simile a tutti solo perché ha gradito
+molti giochi. La similarità vale 0 se i due utenti non hanno giochi graditi in
+comune e 1 se hanno gradito esattamente gli stessi.
+
+\paragraph{Vicini e punteggi.} Per ogni utente $u$ prendo i $k$ utenti con
+similarità più alta, che indico con $N_k(u)$; per ora ho fissato $k = 50$. A
+ogni gioco $i$ assegno il punteggio
+\[
+s(u,i) = \frac{\sum_{v \in N_k(u)} \mathrm{sim}(u,v)\, g(v,i)}
+{\sum_{v \in N_k(u)} \mathrm{sim}(u,v)},
+\]
+cioè la frazione dei vicini che hanno gradito $i$, in cui ogni vicino pesa
+quanto è simile a $u$. Il punteggio è compreso tra 0 e 1: vale 1 se tutti i
+vicini hanno gradito il gioco. Infine escludo i giochi che $u$ possiede già,
+usando $O$, e raccomando gli $n$ giochi con il punteggio più alto.
+
+Molti giochi hanno punteggio 0, perché nessun vicino li ha graditi. Per
+decidere l'ordine tra giochi con lo stesso punteggio aggiungo un contributo
+molto piccolo proporzionale alla popolarità del gioco, cioè al numero di utenti
+che lo hanno gradito: non cambia l'ordine tra giochi con punteggi diversi, ma
+tra due giochi a pari merito fa preferire quello più apprezzato in generale.
+Questo copre anche il caso, raro, di un utente senza nessun vicino con
+similarità maggiore di 0.
+
+\paragraph{Calcolo a blocchi.} Per trovare i vicini devo confrontare ogni
+utente con tutti gli altri. Calcolare in una volta sola tutte le similarità
+vorrebbe dire costruire una matrice $53.653 \times 53.653$, quasi 2,9 miliardi
+di valori e più di 11~GB di memoria. Per questo elaboro gli utenti a blocchi di
+500: per ogni blocco calcolo le similarità con tutti gli utenti, ricavo i vicini
+e le raccomandazioni, e tengo in memoria solo queste ultime prima di passare al
+blocco successivo. Prima del calcolo divido ogni riga di $G$ per la sua norma, ottenendo $G_n$,
+così la similarità coseno diventa un semplice prodotto scalare tra righe.
+
+\subsection{Baseline di popolarità}
+
+Come termine di paragone uso un modello che non personalizza: raccomanda a
+tutti gli utenti i giochi graditi dal maggior numero di persone, escludendo
+quelli che ognuno possiede già. Su Steam pochi giochi molto famosi compaiono
+nelle librerie di quasi tutti, quindi è una baseline difficile da battere: un
+modello personalizzato ha senso solo se riesce a fare meglio.
+
+\section{Valutazione e web app}
+
+Per valutare gli approcci, per ogni utente nascondo una parte dei giochi graditi
+e misuro quanti di questi il sistema riesce a ritrovare tra le prime $n$
+raccomandazioni, con precision e recall. Come termine di paragone uso la
+baseline di popolarità descritta sopra. Oltre al confronto complessivo,
+analizzerò il comportamento sui giochi con pochi giocatori, dove il
+collaborative filtering ha poche informazioni, e la varietà dei giochi
+raccomandati.
+
+Infine affiancherò alla valutazione una piccola web app che, scelto un utente,
+mostra una accanto all'altra le raccomandazioni dei due approcci, ciascuna con
+una breve spiegazione del perché il gioco è stato proposto.
+
+\textbf{[Da continuare]}
+
+% ---------------------------------------------------------------------------
+% Sezioni da completare:
+% \subsection{...}          content-based (tag binari e TF-IDF) e CF item-based
+% \section{Valutazione}     split training/test sui giochi graditi, precision e
+%                           recall sulle prime n, cold start, varietà;
+%                           codice di evaluate.py per il confronto dei modelli
+% \section{Web app}         Streamlit, raccomandazioni dei due approcci affiancate
+% \section{Conclusioni}
+% ---------------------------------------------------------------------------
+
+\begin{thebibliography}{9}
+
+\bibitem{dataset}
+J.~McAuley. \emph{Recommender Systems and Personalization Datasets}. UC San
+Diego. \url{https://cseweb.ucsd.edu/~jmcauley/datasets.html}
+
+\bibitem{refund}
+Valve. \emph{Steam Refunds}. \url{https://store.steampowered.com/steam_refunds}
+
+\end{thebibliography}
+
+\end{document}

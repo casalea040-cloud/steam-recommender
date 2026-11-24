@@ -15,13 +15,19 @@ steam-recommender/
 ├── data/
 │   ├── raw/            # file scaricati (non caricati su GitHub)
 │   ├── interim/        # gli stessi dati letti e salvati come tabelle Parquet
-│   └── processed/      # tabelle pulite (fasi successive)
+│   └── processed/      # tabelle pulite e divisione training/test
 ├── notebooks/          # esplorazione dei dati
 ├── scripts/
 │   └── download_data.py
 ├── src/
-│   ├── config.py       # percorsi del progetto
-│   └── load.py         # lettura dei file grezzi in tabelle pandas
+│   ├── config.py       # percorsi e parametri del progetto
+│   ├── load.py         # lettura dei file grezzi in tabelle pandas
+│   ├── preprocess.py   # pulizia dei dati e indice di gradimento
+│   ├── split.py        # divisione training/test
+│   ├── matrices.py     # matrici utenti x giochi (gradimento e possesso)
+│   ├── collaborative.py # user-based CF e baseline di popolarità
+│   └── evaluate.py     # confronto dei modelli con precision e recall
+├── report/             # report del progetto (LaTeX)
 ├── app/                # web app Streamlit (fasi successive)
 ├── requirements.txt
 └── README.md
@@ -70,6 +76,30 @@ Negli altri file del progetto le tabelle si caricano così:
 from src.load import load_tables
 users_items, games, reviews = load_tables()
 ```
+
+Questo passaggio è facoltativo: `src.preprocess` chiama `load_tables()` da solo e
+crea le tabelle di `data/interim/` se mancano.
+
+## Pulizia, divisione e valutazione
+
+Dalla cartella del progetto, con l'ambiente virtuale attivo:
+
+```bash
+python -m src.preprocess   # pulizia e indice di gradimento → data/processed/
+python -m src.split        # divisione training/test → data/processed/test.parquet
+python -m src.evaluate     # confronto tra popolarità e user-based CF
+```
+
+`src.split` è facoltativo: se `test.parquet` non esiste, `src.evaluate` lo crea da sé.
+La valutazione accetta alcune opzioni:
+
+```bash
+python -m src.evaluate --n 5          # numero di giochi raccomandati (default 10)
+python -m src.evaluate --k 20         # numero di vicini dello user-based (default 50)
+python -m src.evaluate --sample 5000  # valuta solo un campione di utenti, più veloce
+```
+
+Le soglie della pulizia, la quota del test e il seme casuale sono in `src/config.py`.
 
 ## Fonte dei dati
 
