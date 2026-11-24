@@ -61,24 +61,9 @@ Se il download automatico non riesce, i file si scaricano a mano dalla pagina
 [Recommender Systems and Personalization Datasets](https://cseweb.ucsd.edu/~jmcauley/datasets.html)
 (sezione *Steam Video Game and Bundle Data*) e vanno messi in `data/raw/`.
 
-Poi si leggono i file e si salvano come tabelle in `data/interim/` (formato Parquet).
-La prima volta richiede qualche minuto; le successive pochi secondi. Il comando stampa
-anche un riepilogo dei dati:
-
-```bash
-python -m src.load              # usa le tabelle già salvate, se ci sono
-python -m src.load --refresh    # le ricrea dai file .gz
-```
-
-Negli altri file del progetto le tabelle si caricano così:
-
-```python
-from src.load import load_tables
-users_items, games, reviews = load_tables()
-```
-
-Questo passaggio è facoltativo: `src.preprocess` chiama `load_tables()` da solo e
-crea le tabelle di `data/interim/` se mancano.
+La prima volta che si lancia `src.preprocess`, i file vengono letti e salvati come
+tabelle Parquet in `data/interim/` (qualche minuto); le volte successive si
+rileggono da lì in pochi secondi.
 
 ## Pulizia, divisione e valutazione
 
